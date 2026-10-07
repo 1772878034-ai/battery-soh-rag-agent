@@ -1,6 +1,7 @@
 # 轻量测试工具链（CI / 本地测试用，不含 tensorflow、torch 等重型依赖）
 numpy==2.2.6
 scipy==1.15.3
+scikit-learn==1.7.2
 streamlit==1.64.0
 pytest==8.4.2
 pytest-html==4.2.0
