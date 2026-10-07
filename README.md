@@ -14,6 +14,7 @@
 - [目录结构](#目录结构)
 - [环境安装](#环境安装)
 - [快速开始](#快速开始)
+- [SOH 预测流水线（OOP）](#soh-预测流水线oop)
 - [检索评估](#检索评估)
 - [1 分钟演示](#1-分钟演示)
 - [失败案例与局限](#失败案例与局限)
@@ -83,6 +84,7 @@ battery_project/
 │   ├── day6_agent.py           # Agent CLI（单次提问 / 交互模式）
 │   ├── demo_agent.py           # 1 分钟演示脚本
 │   ├── battery_processing.py   # 容量提取等可单测函数
+│   ├── battery_pipeline.py     # DataLoader/FeatureBuilder/ModelRunner 三个类
 │   ├── day1_plot.py            # 数据读取与容量曲线
 │   ├── day2_lstm.py            # LSTM 训练
 │   ├── day3_rag.py             # 基础向量 RAG
@@ -102,11 +104,13 @@ battery_project/
 │   └── 测试与CI使用说明.md
 ├── .github/workflows/test.yml  # CI：单元测试 + 报告
 ├── conftest.py / pytest.ini    # pytest 配置
+├── run_pipeline.py             # 端到端入口：划分+训练+SOH 指标+绘图
 ├── requirements-dev.txt        # 测试依赖
 ├── data/
 │   ├── battery_info.txt        # 知识库（随仓库提交）
 │   ├── B0005.mat               # NASA 数据（gitignore）
-│   ├── lstm_battery_model.h5   # LSTM 权重（gitignore）
+│   ├── lstm_battery_model.keras # LSTM 权重（gitignore）
+│   ├── lstm_soh_pred.png       # 三段 SOH 预测对比图
 │   ├── faiss_db/               # FAISS 索引（gitignore）
 │   └── model/                  # HF 模型缓存（gitignore）
 ├── assets/                     # 页面截图
@@ -137,6 +141,9 @@ huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct ^
 ## 快速开始
 
 ```bash
+# 0. LSTM 的 SOH 流水线（时间顺序划分 + 误差指标 + 绘图）
+python run_pipeline.py
+
 # 1.（可选但推荐）按当前知识库重建 FAISS 索引
 python src/build_index.py
 
@@ -155,6 +162,57 @@ streamlit run src/day5_web_app.py
 # 6. 分阶段教程脚本
 python src/day1_plot.py && python src/day2_lstm.py
 python src/day3_rag.py && python src/day4_hybrid_rag.py
+```
+
+## SOH 预测流水线（OOP）
+
+把 day2 的脚本式流程重构为三个职责单一、可复用、可单测的类（[`src/battery_pipeline.py`](src/battery_pipeline.py)）：
+
+| 类 | 职责 |
+|---|---|
+| `DataLoader` | 读取 `.mat`、电流积分求容量、容量→SOH、按时间顺序划分、归一化/反归一化 |
+| `FeatureBuilder` | 用 time_step=5 滑窗构造 LSTM 三维样本，并按目标点位置归入 train/val/test |
+| `ModelRunner` | LSTM 搭建、训练（验证集 + EarlyStopping）、预测、MAE/RMSE/MAPE/R² 评估、`.keras` 读写 |
+
+**目标量与口径**
+
+- SOH(%) = 当前最大可用容量 / 额定容量 × 100，NASA 18650 取额定容量 Q_nom = 2.0 Ah。
+- **只按时间顺序划分、不打乱**：train < 117、val [117,142)、test ≥ 142；
+  滑窗样本数 train/val/test = 112/25/26。验证/测试段开头窗口引用前一段末尾的
+  历史点是预测时本就已知的信息，不属于未来泄漏。
+- **固定物理量程缩放**：SOH ∈ [50,105] 的先验工程边界，而非在训练段拟合
+  MinMaxScaler。若只在训练段拟合，测试段更低的 SOH 会落到训练量程之外，
+  网络输出饱和、预测被“压平”在训练最低点（对照实验测试 MAE 2.4~4.6、R² 为负）；
+  改用固定量程后饱和消失。固定量程来自工程先验，不依赖未来数据。
+
+**留出测试集上的 SOH 误差**（固定种子 42，MAE/RMSE 单位为 SOH 百分点，MAPE 为 %）
+
+| 集合 | MAE | RMSE | MAPE | R² |
+|---|---|---|---|---|
+| train | 0.4565 | 0.8693 | 0.5366 | 0.9843 |
+| val | 0.4461 | 0.5994 | 0.6390 | 0.7970 |
+| **test** | **0.5651** | **0.6879** | **0.8542** | 0.3256 |
+
+测试段 SOH 近水平、方差很小，R² 对这种“低方差 + 小误差”组合偏苛刻；工程上以
+**测试 MAE ≈ 0.57 个 SOH 百分点、MAPE < 1%** 为准。
+
+![SOH 三段预测对比](data/lstm_soh_pred.png)
+
+作为库调用：
+
+```python
+from src.battery_pipeline import DataLoader, FeatureBuilder, ModelRunner
+
+loader = DataLoader("data/B0005.mat", scale_bounds=(50.0, 105.0))
+soh = loader.capacity_to_soh(loader.load_capacities())
+train_end, val_end = loader.split_points(len(soh))
+loader.fit_scaler(soh[:train_end])
+sets = FeatureBuilder(5).build(loader.scale(soh), train_end, val_end)
+
+runner = ModelRunner(5).build()
+runner.train(*sets["train"][:2], *sets["val"][:2])
+print(ModelRunner.evaluate(loader.inverse_scale(sets["test"][1]),
+                           loader.inverse_scale(runner.predict(sets["test"][0]))))
 ```
 
 ## 检索评估
@@ -235,7 +293,9 @@ python eval/eval_retrieval.py
    - 现象：预测曲线与实测贴合很好，但该结果是在同一段序列上得到的，指标偏乐观。
    - 原因：day2 在全量数据上训练并在同序列预测；time_step=5 本质是平滑式追踪，
      无法预测训练区间之外的循环。
-   - 处理：后续按循环区间切分训练/验证集，并给出外推置信区间。
+   - 处理：已在 [`run_pipeline.py`](run_pipeline.py) / `battery_pipeline.py` 中按循环
+     区间做时间顺序 train/val/test 切分、固定量程缩放，并在留出测试集上报告
+     MAE/RMSE/MAPE/R²（见 [SOH 预测流水线](#soh-预测流水线oop)）；外推置信区间仍待补充。
 
 7. **知识库覆盖面有限**
    - 现象：知识库仅 5 个话题段落，价格、厂家等问题无内容可答；top3 证据中可能
@@ -246,7 +306,7 @@ python eval/eval_retrieval.py
 
 - 检索：BM25 接入 jieba 分词；RRF 改为按查询类型的动态权重；扩充多源文档（标准、论文、运维记录）。
 - Agent：引入多轮 ReAct 反思与工具自检；记忆增加摘要压缩与向量检索（long-term memory）。
-- 预测：LSTM 增加训练/验证切分与外推区间，融合 CNN-LSTM / 注意力模型并对比。
+- 预测：在已有时间顺序切分基础上补充外推置信区间，融合 CNN-LSTM / 注意力模型并对比。
 - 工程：GitHub Actions 自动跑评估并对比指标基线；Docker 镜像固定模型版本。
 
 ## 技术栈

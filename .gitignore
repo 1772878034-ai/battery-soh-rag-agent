@@ -17,6 +17,8 @@ env/
 *.swo
 # 项目大文件（不提交到Git仓库，防止仓库体积过大）
 data/lstm_battery_model.h5
+data/lstm_battery_model.keras
+data/*.keras
 data/B0005.mat
 data/faiss_db/
 # HuggingFace 模型本地缓存
