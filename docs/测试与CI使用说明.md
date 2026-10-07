@@ -36,6 +36,7 @@ D:\software\anaconda3\envs\battery\python.exe -m pytest tests/unit `
 ## 3. 运行 Playwright（Streamlit E2E）
 
 ```powershell
+$env:RUN_DAY5_E2E="1"
 D:\software\anaconda3\envs\battery\python.exe -m pytest tests/e2e -v
 ```
 
@@ -56,7 +57,7 @@ D:\software\anaconda3\envs\battery\python.exe -m pytest tests/e2e -v
 ## 4. GitHub Actions
 
 工作流文件：`.github/workflows/test.yml`，两个 Job：
-1. **unit-tests**：安装依赖（requirements-dev.txt）→ 运行 Pytest 生成 HTML/JUnit → 发布结果摘要 → 上传 `unit-test-report` 工件；
+1. **unit-tests**：安装 `requirements-dev.txt` + `tensorflow==2.21.0`（`tests/unit/test_battery_pipeline.py` 需要 TensorFlow）→ 运行 Pytest 生成 HTML/JUnit → 发布结果摘要 → 上传 `unit-test-report` 工件；
 2. **e2e-streamlit**：安装依赖与 Chromium → 运行 Playwright → 上传 `e2e-screenshots-logs` 工件（截图/日志）。
 
 触发时机：push 到 main、Pull Request、手动 workflow_dispatch。
