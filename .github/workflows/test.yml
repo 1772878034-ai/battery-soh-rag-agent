@@ -6,6 +6,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# publish-unit-test-result-action 需要创建 check run / PR 评论
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
 jobs:
   unit-tests:
     name: 安装依赖 → Pytest → 上传报告
